@@ -5,15 +5,28 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN addgroup --system bot && \
-    adduser --system --ingroup bot bot
-
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install \
+    --no-cache-dir \
+    -r requirements.txt
 
 COPY bot ./bot
 
-USER bot
+RUN useradd \
+    --create-home \
+    --uid 10001 \
+    appuser
 
-CMD ["python", "-m", "bot.main"]
+RUN chown -R appuser:appuser /app
+
+USER appuser
+
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD exec uvicorn \
+    bot.main:app \
+    --host 0.0.0.0 \
+    --port ${PORT}
