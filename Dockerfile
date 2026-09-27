@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN addgroup --system bot && \
+    adduser --system --ingroup bot bot
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY bot ./bot
+
+USER bot
+
+CMD ["python", "-m", "bot.main"]
