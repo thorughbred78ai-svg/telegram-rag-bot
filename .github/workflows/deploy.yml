@@ -1,4 +1,5 @@
-name: CI/CD - Telegram RAG Bot
+
+name: Deploy Telegram RAG Bot
 
 on:
   push:
@@ -11,49 +12,26 @@ permissions:
   contents: read
   id-token: write
 
-
 env:
-  SERVICE_NAME: telegram-rag-bot
   REGION: asia-east1
-  AR_REPOSITORY: telegram-rag
+  SERVICE_NAME: telegram-rag-bot
+  ARTIFACT_REPO: telegram-rag
   IMAGE_NAME: telegram-rag-bot
-
 
 jobs:
 
-  test:
-    name: Test
+  deploy:
+
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Compile
-        run: |
-          python -m compileall bot
-
-
-  build-and-deploy:
-    name: Build and Deploy
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
+      # ------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
 
       # ------------------------------------------------------
@@ -64,15 +42,19 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
+
+      # ------------------------------------------------------
+      # Google Cloud SDK
+      # ------------------------------------------------------
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v3
 
 
       # ------------------------------------------------------
-      # Docker / Artifact Registry
+      # Docker authentication
       # ------------------------------------------------------
 
       - name: Configure Docker
@@ -82,20 +64,25 @@ jobs:
             --quiet
 
 
-      - name: Build image
-        run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+      # ------------------------------------------------------
+      # Build image
+      # ------------------------------------------------------
 
+      - name: Build Docker image
+        run: |
           docker build \
-            --tag "$IMAGE" \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             .
 
 
-      - name: Push image
-        run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+      # ------------------------------------------------------
+      # Push image
+      # ------------------------------------------------------
 
-          docker push "$IMAGE"
+      - name: Push Docker image
+        run: |
+          docker push \
+            ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
 
       # ------------------------------------------------------
@@ -108,59 +95,47 @@ jobs:
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
-          image: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
           flags: >-
             --allow-unauthenticated
-            --port=8080
+            --min-instances=0
+            --max-instances=3
             --memory=512Mi
             --cpu=1
-            --timeout=120
+            --timeout=300
             --concurrency=20
-            --min-instances=0
-            --max-instances=5
 
-          env_vars: |-
-            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-            TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+            --set-env-vars=QDRANT_URL=${{ secrets.QDRANT_URL }},
+            QDRANT_COLLECTION=google_drive_rag,
+            CHAT_MODEL=${{ vars.CHAT_MODEL }},
+            EMBEDDING_MODEL=${{ vars.EMBEDDING_MODEL }},
+            EMBEDDING_DIMENSIONS=${{ vars.EMBEDDING_DIMENSIONS }},
+            TOP_K=${{ vars.TOP_K }},
+            MEMORY_TURNS=${{ vars.MEMORY_TURNS }},
+            RATE_LIMIT_REQUESTS=${{ vars.RATE_LIMIT_REQUESTS }},
+            RATE_LIMIT_WINDOW_SECONDS=${{ vars.RATE_LIMIT_WINDOW_SECONDS }},
+            TELEGRAM_ALLOWED_CHAT_IDS=${{ secrets.TELEGRAM_ALLOWED_CHAT_IDS }},
+            TELEGRAM_WEBHOOK_PATH=${{ vars.TELEGRAM_WEBHOOK_PATH }}
 
-            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
-            OPENROUTER_CHAT_MODEL=qwen/qwen3-1.7b
-            OPENROUTER_EMBED_MODEL=baai/bge-m3
-
-            QDRANT_URL=${{ secrets.QDRANT_URL }}
-            QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
-            QDRANT_COLLECTION=google_drive_rag
-
-            REDIS_URL=${{ secrets.REDIS_URL }}
-
-            ALLOWED_CHAT_IDS=${{ secrets.ALLOWED_CHAT_IDS }}
-
-            TOP_K=5
-            SCORE_THRESHOLD=0.4
-            MAX_TURNS=6
-            MEMORY_TTL=86400
-            RATE_LIMIT=8
-            RATE_WINDOW=60
-            MAX_CONTEXT_CHARS=4500
-            MAX_QUESTION_CHARS=1000
-            MAX_TELEGRAM_REPLY_CHARS=3500
-
-            OPENROUTER_HTTP_REFERER=https://github.com/${{ github.repository }}
-            OPENROUTER_TITLE=Telegram RAG Bot
+            --update-secrets=TELEGRAM_BOT_TOKEN=telegram-bot-token:latest,
+            TELEGRAM_WEBHOOK_SECRET=telegram-webhook-secret:latest,
+            OPENROUTER_API_KEY=openrouter-api-key:latest,
+            QDRANT_API_KEY=qdrant-api-key:latest,
+            REDIS_URL=redis-url:latest
 
 
       # ------------------------------------------------------
-      # Configure Telegram webhook
+      # Get Cloud Run URL
       # ------------------------------------------------------
 
       - name: Get Cloud Run URL
         id: url
         run: |
-          URL="$(gcloud run services describe \
-            "${SERVICE_NAME}" \
-            --region "${REGION}" \
-            --format='value(status.url)')"
+          URL=$(gcloud run services describe \
+            ${{ env.SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
 
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
@@ -168,44 +143,27 @@ jobs:
           echo "$URL"
 
 
+      # ------------------------------------------------------
+      # Configure Telegram webhook
+      # ------------------------------------------------------
+
       - name: Configure Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           CLOUD_RUN_URL: ${{ steps.url.outputs.url }}
+          TELEGRAM_WEBHOOK_PATH: ${{ vars.TELEGRAM_WEBHOOK_PATH }}
         run: |
+
+          WEBHOOK_URL="${CLOUD_RUN_URL}/${TELEGRAM_WEBHOOK_PATH}"
 
           curl --fail-with-body \
-            --request POST \
+            -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            --header "Content-Type: application/json" \
-            --data "$(jq -n \
-              --arg url "${CLOUD_RUN_URL}/telegram/webhook" \
-              --arg secret "${TELEGRAM_WEBHOOK_SECRET}" \
-              '{
-                url: $url,
-                secret_token: $secret,
-                allowed_updates: ["message"],
-                drop_pending_updates: true
-              }'
-            )"
+            -d "url=${WEBHOOK_URL}" \
+            -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+            -d 'allowed_updates=["message"]'
 
-
-      # ------------------------------------------------------
-      # Smoke test
-      # ------------------------------------------------------
-
-      - name: Health check
-        env:
-          CLOUD_RUN_URL: ${{ steps.url.outputs.url }}
-        run: |
-
-          curl \
-            --fail \
-            --retry 10 \
-            --retry-delay 5 \
-            --retry-connrefused \
-            "${CLOUD_RUN_URL}/health"
-
-          echo
-          echo "Deployment successful."
+          echo ""
+          echo "Telegram webhook configured:"
+          echo "${WEBHOOK_URL}"
