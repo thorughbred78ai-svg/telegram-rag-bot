@@ -1,0 +1,61 @@
+services:
+
+  bot:
+    image: ghcr.io/${GITHUB_OWNER}/${GITHUB_REPO}:latest
+    container_name: telegram-rag-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-rag-redis
+    restart: unless-stopped
+
+    command:
+      - redis-server
+      - --appendonly
+      - yes
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: telegram-rag-qdrant
+    restart: unless-stopped
+
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:6333/readyz || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  redis_data:
+  qdrant_data:
