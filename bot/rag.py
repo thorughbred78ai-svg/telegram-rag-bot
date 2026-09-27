@@ -12,6 +12,11 @@ qdrant = AsyncQdrantClient(
 
 
 async def embed_query(text: str) -> list[float]:
+    if not settings.embedding_url:
+        raise RuntimeError(
+            "EMBEDDING_URL is not configured"
+        )
+
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             settings.embedding_url,
@@ -24,7 +29,14 @@ async def embed_query(text: str) -> list[float]:
 
         data = response.json()
 
-        return data["embedding"]
+        embedding = data.get("embedding")
+
+        if not isinstance(embedding, list):
+            raise RuntimeError(
+                "Embedding service returned invalid data"
+            )
+
+        return embedding
 
 
 async def search_qdrant(
@@ -48,3 +60,63 @@ async def search_qdrant(
         }
         for point in result.points
     ]
+
+
+def build_context(
+    hits: list[dict],
+) -> tuple[str, list[str]]:
+
+    used = 0
+    blocks = []
+    sources = []
+
+    for index, hit in enumerate(hits, start=1):
+
+        payload = hit["payload"]
+
+        filename = payload.get(
+            "fileName",
+            "未知文件",
+        )
+
+        chunk_index = payload.get(
+            "chunkIndex",
+            "?",
+        )
+
+        text = str(
+            payload.get(
+                "text",
+                "",
+            )
+        )
+
+        text = text.replace(
+            "<context>",
+            "",
+        ).replace(
+            "</context>",
+            "",
+        )
+
+        block = (
+            f"[{index}] "
+            f"文件：{filename} "
+            f"（段落 {chunk_index}）\n"
+            f"{text}"
+        )
+
+        if (
+            used + len(block)
+            > settings.max_context_chars
+            and blocks
+        ):
+            break
+
+        blocks.append(block)
+        used += len(block)
+
+        if filename not in sources:
+            sources.append(filename)
+
+    return "\n\n".join(blocks), sources
